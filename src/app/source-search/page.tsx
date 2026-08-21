@@ -408,17 +408,28 @@ function SourceSearchPageClient() {
   };
 
   // videos 渲染完成后恢复滚动位置
+  // 轮询式：反复尝试滚动到目标位置，直到成功或超时。
+  // 可应对图片懒加载撑高页面、Next.js 导航滚动干扰等导致一次性 scrollTo 失效的情况。
   useEffect(() => {
-    if (pendingScrollRef.current === null || videos.length === 0) return;
-    const y = pendingScrollRef.current;
+    if (pendingScrollRef.current === null) return;
+    const targetY = pendingScrollRef.current;
     pendingScrollRef.current = null;
-    // 双重 rAF + 延时，等懒加载图片和列表渲染稳定后再滚动，尽量精确恢复到原位置
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        window.scrollTo(0, y);
-        setTimeout(() => window.scrollTo(0, y), 300);
-      });
-    });
+
+    let attempts = 0;
+    const maxAttempts = 40; // 最多尝试 4 秒（每 100ms 一次）
+    const tryScroll = () => {
+      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const clamped = Math.min(targetY, maxY);
+      if (clamped > 0) {
+        window.scrollTo(0, clamped);
+      }
+      const reached = maxY > 0 && Math.abs(window.scrollY - clamped) < 8;
+      attempts++;
+      if (!reached && attempts < maxAttempts) {
+        setTimeout(tryScroll, 100);
+      }
+    };
+    tryScroll();
   }, [videos]);
 
   // Intersection Observer for infinite scroll
