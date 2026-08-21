@@ -241,8 +241,9 @@ function SourceSearchPageClient() {
         }
         setVideos(cached.videos);
         setHasMore(cached.hasMore);
-        // 恢复滚动位置（等 videos 渲染后）
+        // 恢复滚动位置（由常驻滚动监视器执行）
         pendingScrollRef.current = cached.scrollY;
+        console.log('[source-search] restore scroll set', { scrollY: cached.scrollY });
         return; // 跳过 fetch
       }
     }
@@ -376,41 +377,58 @@ function SourceSearchPageClient() {
       });
       writeCache(selectedSource, `search:${searchKeyword}`, data);
     } else if (viewMode === 'browse' && selectedSource && selectedCategory) {
-      console.log('[source-search] saveStateToCache browse', {
-        cacheKey: `${selectedSource}:${selectedCategory}`,
-        videosLen: videos.length,
-        currentPage,
-      });
+    console.log('[source-search] saveStateToCache browse', {
+      cacheKey: `${selectedSource}:${selectedCategory}`,
+      videosLen: videos.length,
+      currentPage,
+      scrollY: data.scrollY,
+    });
       writeCache(selectedSource, selectedCategory, data);
     }
   };
 
-  // videos 渲染完成后恢复滚动位置
-  // 轮询式：反复尝试滚动到目标位置，直到成功或超时。
-  // 可应对图片懒加载撑高页面、Next.js 导航滚动干扰等导致一次性 scrollTo 失效的情况。
+  // ---- 恢复滚动位置（常驻监视器）----
+  // 不依赖 videos 渲染时序：只要恢复缓存时设置了 pendingScrollRef，
+  // 就每 100ms 尝试滚动到目标，页面高度足够且到达目标即完成；超时（3 秒）放弃，避免阻塞手动滚动。
   useEffect(() => {
-    if (pendingScrollRef.current === null) return;
-    const targetY = pendingScrollRef.current;
-    pendingScrollRef.current = null;
-
     let attempts = 0;
-    const maxAttempts = 40; // 最多尝试 4 秒（每 100ms 一次）
-    const tryScroll = () => {
-      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      const clamped = Math.min(targetY, maxY);
-      if (clamped > 0) {
-        window.scrollTo(0, clamped);
-      }
-      // 页面高度足以容纳目标位置且已滚到目标附近，才算恢复成功；
-      // 若页面高度还不足（图片懒加载未撑开），继续等待并追进，避免只滚到一半。
-      const reached = maxY >= targetY && Math.abs(window.scrollY - targetY) < 8;
+    const timer = setInterval(() => {
+      const targetY = pendingScrollRef.current;
+      if (targetY === null) return;
       attempts++;
-      if (!reached && attempts < maxAttempts) {
-        setTimeout(tryScroll, 100);
+      if (attempts > 30) {
+        pendingScrollRef.current = null; // 3 秒仍未成功则放弃
+        return;
+      }
+      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      if (maxY < targetY) return; // 图片懒加载未撑开页面，继续等待
+      window.scrollTo(0, targetY);
+      if (Math.abs(window.scrollY - targetY) < 8) {
+        pendingScrollRef.current = null; // 到达目标
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 从播放页返回（浏览器后退）时，若组件实例被 Next.js 复用而未重新挂载，
+  // 上面的恢复逻辑不会重新运行；pageshow 在历史导航/bfcache 恢复后触发，此时从缓存补一次滚动恢复。
+  useEffect(() => {
+    const onPageShow = () => {
+      if (videos.length === 0 || pendingScrollRef.current !== null) return;
+      const key = viewMode === 'search' ? `search:${searchKeyword}` : selectedCategory;
+      if (!selectedSource || !key) return;
+      const cached = readCache(selectedSource, key);
+      if (cached && cached.scrollY > 0) {
+        console.log('[source-search] pageshow restore scroll', {
+          scrollY: cached.scrollY,
+          videosLen: videos.length,
+        });
+        pendingScrollRef.current = cached.scrollY;
       }
     };
-    tryScroll();
-  }, [videos]);
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
+  }, [videos, selectedSource, selectedCategory, viewMode, searchKeyword]);
 
   // Intersection Observer for infinite scroll
   useEffect(() => {
