@@ -94,6 +94,13 @@ function SourceSearchPageClient() {
     urlPageRef.current = parseInt(params.get('page') || '1', 10) || 1;
     const mode = params.get('mode');
     const keyword = params.get('keyword') || '';
+    console.log('[source-search] init url params', {
+      source: urlSourceRef.current,
+      category: urlCategoryRef.current,
+      page: urlPageRef.current,
+      mode,
+      keyword,
+    });
     if (mode === 'search' && keyword) {
       setViewMode('search');
       setSearchKeyword(keyword);
@@ -197,6 +204,11 @@ function SourceSearchPageClient() {
           // 优先选择 URL 中指定的分类，否则默认第一个
           const urlCategory = urlCategoryRef.current;
           const valid = data.categories.find((c: Category) => c.id === urlCategory);
+          console.log('[source-search] fetchCategories done', {
+            urlCategory,
+            validCategory: valid?.id,
+            firstCategory: data.categories[0]?.id,
+          });
           setSelectedCategory(valid ? valid.id : (data.categories[0]?.id || ''));
         }
       } catch (error) {
@@ -222,12 +234,27 @@ function SourceSearchPageClient() {
     if (viewMode !== 'browse' || !selectedSource || !selectedCategory) return;
 
     const cacheKey = `${selectedSource}:${selectedCategory}`;
+    console.log('[source-search] browse effect', {
+      selectedSource,
+      selectedCategory,
+      currentPage,
+      videosLen: videos.length,
+      restoredCacheKey: restoredCacheKeyRef.current,
+      cacheKey,
+      urlSource: urlSourceRef.current,
+      urlCategory: urlCategoryRef.current,
+    });
 
-    // 仅在组件首次挂载时（从播放页返回/刷新场景）尝试从缓存恢复，
-    // 之后主动切换分类/源时不恢复，重新加载最新第一页
-    if (restoredCacheKeyRef.current === null) {
+    // 列表为空时，尝试从缓存恢复（从播放页返回/刷新场景）
+    if (videos.length === 0 && restoredCacheKeyRef.current !== cacheKey) {
       restoredCacheKeyRef.current = cacheKey;
       const cached = readCache(selectedSource, selectedCategory);
+      console.log('[source-search] restore attempt', {
+        cacheKey,
+        cachedFound: !!cached,
+        cachedVideosLen: cached?.videos.length,
+        cachedPage: cached?.currentPage,
+      });
       if (cached && cached.videos.length > 0) {
         // 恢复页码（如果与 URL 中的 page 不一致）
         if (cached.currentPage !== currentPage) {
@@ -248,6 +275,7 @@ function SourceSearchPageClient() {
       return;
     }
 
+    console.log('[source-search] fetch videos', { selectedSource, selectedCategory, currentPage });
     const fetchVideos = async () => {
       setIsLoadingVideos(true);
       try {
@@ -255,6 +283,12 @@ function SourceSearchPageClient() {
           appendSpecialSourceParam(`/api/source-search/videos?source=${encodeURIComponent(selectedSource)}&categoryId=${encodeURIComponent(selectedCategory)}&page=${currentPage}`)
         );
         const data = await response.json();
+        console.log('[source-search] fetch videos result', {
+          currentPage,
+          resultsLen: data.results?.length,
+          page: data.page,
+          pageCount: data.pageCount,
+        });
         if (data.results && Array.isArray(data.results)) {
           if (currentPage === 1) {
             setVideos(data.results);
@@ -279,8 +313,13 @@ function SourceSearchPageClient() {
 
     const cacheKey = `search:${selectedSource}:${searchKeyword}`;
 
-    // 仅在组件首次挂载时（从播放页返回/刷新场景）尝试从缓存恢复
-    if (restoredCacheKeyRef.current === null) {
+    // 从播放页返回/刷新场景：URL 中 mode=search 与关键词一致且列表为空时，从缓存恢复
+    const isUrlRestore =
+      urlSourceRef.current === selectedSource &&
+      window.location.search.includes('mode=search') &&
+      new URLSearchParams(window.location.search).get('keyword') === searchKeyword;
+
+    if (isUrlRestore && videos.length === 0 && restoredCacheKeyRef.current !== cacheKey) {
       restoredCacheKeyRef.current = cacheKey;
       const cached = readCache(selectedSource, `search:${searchKeyword}`);
       if (cached && cached.videos.length > 0) {
@@ -326,13 +365,6 @@ function SourceSearchPageClient() {
     searchVideos();
   }, [selectedSource, searchKeyword, currentPage, viewMode]);
 
-  // 当分类变化时，重置到第一页
-  useEffect(() => {
-    setCurrentPage(1);
-    setVideos([]);
-    setHasMore(true);
-  }, [selectedCategory]);
-
   // 处理搜索提交
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -360,8 +392,17 @@ function SourceSearchPageClient() {
     if (videos.length === 0) return;
     const data = { videos, currentPage, hasMore, scrollY: window.scrollY };
     if (viewMode === 'search' && selectedSource && searchKeyword) {
+      console.log('[source-search] saveStateToCache search', {
+        cacheKey: `${selectedSource}:search:${searchKeyword}`,
+        videosLen: videos.length,
+      });
       writeCache(selectedSource, `search:${searchKeyword}`, data);
     } else if (viewMode === 'browse' && selectedSource && selectedCategory) {
+      console.log('[source-search] saveStateToCache browse', {
+        cacheKey: `${selectedSource}:${selectedCategory}`,
+        videosLen: videos.length,
+        currentPage,
+      });
       writeCache(selectedSource, selectedCategory, data);
     }
   };
