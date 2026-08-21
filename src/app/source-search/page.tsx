@@ -2,6 +2,7 @@
 'use client';
 
 import { Loader2, Search } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
 import { isAnimeCategoryText } from '@/lib/anime-keyword-expr';
@@ -20,7 +21,54 @@ interface Category {
 
 type ViewMode = 'browse' | 'search';
 
+// ---- 视频列表缓存（sessionStorage），用于从播放页返回时恢复 ----
+interface VideoCacheData {
+  videos: SearchResult[];
+  currentPage: number;
+  hasMore: boolean;
+  scrollY: number;
+}
+
+const CACHE_PREFIX = 'source-search-cache:';
+
+function getCacheKey(source: string, key: string) {
+  return `${CACHE_PREFIX}${source}:${key}`;
+}
+
+function readCache(source: string, key: string): VideoCacheData | null {
+  try {
+    const raw = sessionStorage.getItem(getCacheKey(source, key));
+    return raw ? (JSON.parse(raw) as VideoCacheData) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(source: string, key: string, data: VideoCacheData) {
+  try {
+    sessionStorage.setItem(getCacheKey(source, key), JSON.stringify(data));
+  } catch {
+    // sessionStorage 不可用时静默忽略
+  }
+}
+
+
 function SourceSearchPageClient() {
+  const router = useRouter();
+  const initializedRef = useRef(false);
+  // 首次挂载不替换 URL，保留原始参数
+  const hasSyncedRef = useRef(false);
+  // 已尝试恢复缓存的 key（source:category 或 search:source:keyword），避免重复恢复
+  const restoredCacheKeyRef = useRef<string | null>(null);
+  // 恢复缓存后用于跳过因 currentPage 变化触发的重复请求
+  const restoredPageRef = useRef<number | null>(null);
+  // 待恢复的滚动位置，videos 渲染完成后滚动
+  const pendingScrollRef = useRef<number | null>(null);
+  // 初始 URL 参数
+  const urlSourceRef = useRef('');
+  const urlCategoryRef = useRef('');
+  const urlPageRef = useRef(1);
+
   const [apiSites, setApiSites] = useState<ApiSite[]>([]);
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [categories, setCategories] = useState<Category[]>([]);
@@ -36,6 +84,74 @@ function SourceSearchPageClient() {
   const [searchInputValue, setSearchInputValue] = useState<string>('');
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
+  // ---- 挂载时从 URL 恢复初始状态（source/category/page/mode/keyword） ----
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    urlSourceRef.current = params.get('source') || '';
+    urlCategoryRef.current = params.get('category') || '';
+    urlPageRef.current = parseInt(params.get('page') || '1', 10) || 1;
+    const mode = params.get('mode');
+    const keyword = params.get('keyword') || '';
+    if (mode === 'search' && keyword) {
+      setViewMode('search');
+      setSearchKeyword(keyword);
+      setSearchInputValue(keyword);
+      setCurrentPage(urlPageRef.current);
+    } else if (urlPageRef.current > 1) {
+      // 浏览模式也从 URL 恢复页码
+      setCurrentPage(urlPageRef.current);
+    }
+  }, []);
+
+  // ---- 状态变化时同步到 URL，返回/刷新时保持状态 ----
+  useEffect(() => {
+    if (!hasSyncedRef.current) {
+      hasSyncedRef.current = true;
+      return; // 首次挂载不替换 URL，保留原始参数
+    }
+    // 初始化未完成前不覆盖 URL，避免丢失 category/page 参数
+    if (!selectedSource) return;
+    if (viewMode === 'browse' && !selectedCategory) return;
+    if (viewMode === 'search' && !searchKeyword) return;
+
+    const params = new URLSearchParams();
+    if (selectedSource) params.set('source', selectedSource);
+    if (viewMode === 'browse' && selectedCategory) {
+      params.set('category', selectedCategory);
+    }
+    if (viewMode === 'search' && searchKeyword) {
+      params.set('mode', 'search');
+      params.set('keyword', searchKeyword);
+    }
+    if (currentPage > 1) params.set('page', String(currentPage));
+    const query = params.toString();
+    router.replace(`/source-search${query ? `?${query}` : ''}`, { scroll: false });
+  }, [selectedSource, selectedCategory, currentPage, viewMode, searchKeyword, router]);
+
+  // ---- 缓存浏览模式的视频列表状态 ----
+  useEffect(() => {
+    if (viewMode !== 'browse' || videos.length === 0 || !selectedSource || !selectedCategory) return;
+    writeCache(selectedSource, selectedCategory, {
+      videos,
+      currentPage,
+      hasMore,
+      scrollY: window.scrollY,
+    });
+  }, [videos, currentPage, hasMore, selectedSource, selectedCategory, viewMode]);
+
+  // ---- 缓存搜索模式的视频列表状态 ----
+  useEffect(() => {
+    if (viewMode !== 'search' || videos.length === 0 || !selectedSource || !searchKeyword) return;
+    writeCache(selectedSource, `search:${searchKeyword}`, {
+      videos,
+      currentPage,
+      hasMore,
+      scrollY: window.scrollY,
+    });
+  }, [videos, currentPage, hasMore, selectedSource, searchKeyword, viewMode]);
+
   // 加载用户可用的视频源
   useEffect(() => {
     const fetchApiSites = async () => {
@@ -45,10 +161,10 @@ function SourceSearchPageClient() {
         const data = await response.json();
         if (data.sources && Array.isArray(data.sources)) {
           setApiSites(data.sources);
-          // 默认选择第一个源
-          if (data.sources.length > 0) {
-            setSelectedSource(data.sources[0].key);
-          }
+          // 优先选择 URL 中指定的源，否则默认第一个
+          const urlSource = urlSourceRef.current;
+          const valid = data.sources.find((s: ApiSite) => s.key === urlSource);
+          setSelectedSource(valid ? valid.key : (data.sources[0]?.key || ''));
         }
       } catch (error) {
         console.error('Failed to load API sources:', error);
@@ -78,10 +194,10 @@ function SourceSearchPageClient() {
         const data = await response.json();
         if (data.categories && Array.isArray(data.categories)) {
           setCategories(data.categories);
-          // 默认选择第一个分类
-          if (data.categories.length > 0) {
-            setSelectedCategory(data.categories[0].id);
-          }
+          // 优先选择 URL 中指定的分类，否则默认第一个
+          const urlCategory = urlCategoryRef.current;
+          const valid = data.categories.find((c: Category) => c.id === urlCategory);
+          setSelectedCategory(valid ? valid.id : (data.categories[0]?.id || ''));
         }
       } catch (error) {
         console.error('Failed to load categories:', error);
@@ -96,6 +212,33 @@ function SourceSearchPageClient() {
   // 当选择的分类或页码变化时，加载视频列表（浏览模式）
   useEffect(() => {
     if (viewMode !== 'browse' || !selectedSource || !selectedCategory) return;
+
+    const cacheKey = `${selectedSource}:${selectedCategory}`;
+
+    // 仅在组件首次挂载时（从播放页返回/刷新场景）尝试从缓存恢复，
+    // 之后主动切换分类/源时不恢复，重新加载最新第一页
+    if (restoredCacheKeyRef.current === null) {
+      restoredCacheKeyRef.current = cacheKey;
+      const cached = readCache(selectedSource, selectedCategory);
+      if (cached && cached.videos.length > 0) {
+        // 恢复页码（如果与 URL 中的 page 不一致）
+        if (cached.currentPage !== currentPage) {
+          restoredPageRef.current = cached.currentPage;
+          setCurrentPage(cached.currentPage);
+        }
+        setVideos(cached.videos);
+        setHasMore(cached.hasMore);
+        // 恢复滚动位置（等 videos 渲染后）
+        pendingScrollRef.current = cached.scrollY;
+        return; // 跳过 fetch
+      }
+    }
+
+    // 如果刚刚恢复了缓存且页码已同步，跳过因 currentPage 变化触发的 fetch
+    if (restoredPageRef.current !== null && restoredPageRef.current === currentPage && videos.length > 0) {
+      restoredPageRef.current = null;
+      return;
+    }
 
     const fetchVideos = async () => {
       setIsLoadingVideos(true);
@@ -125,6 +268,30 @@ function SourceSearchPageClient() {
   // 当搜索关键词或页码变化时，执行搜索（搜索模式）
   useEffect(() => {
     if (viewMode !== 'search' || !selectedSource || !searchKeyword) return;
+
+    const cacheKey = `search:${selectedSource}:${searchKeyword}`;
+
+    // 仅在组件首次挂载时（从播放页返回/刷新场景）尝试从缓存恢复
+    if (restoredCacheKeyRef.current === null) {
+      restoredCacheKeyRef.current = cacheKey;
+      const cached = readCache(selectedSource, `search:${searchKeyword}`);
+      if (cached && cached.videos.length > 0) {
+        if (cached.currentPage !== currentPage) {
+          restoredPageRef.current = cached.currentPage;
+          setCurrentPage(cached.currentPage);
+        }
+        setVideos(cached.videos);
+        setHasMore(cached.hasMore);
+        pendingScrollRef.current = cached.scrollY;
+        return; // 跳过 fetch
+      }
+    }
+
+    // 如果刚刚恢复了缓存且页码已同步，跳过因 currentPage 变化触发的 fetch
+    if (restoredPageRef.current !== null && restoredPageRef.current === currentPage && videos.length > 0) {
+      restoredPageRef.current = null;
+      return;
+    }
 
     const searchVideos = async () => {
       setIsLoadingVideos(true);
@@ -179,6 +346,28 @@ function SourceSearchPageClient() {
     setVideos([]);
     setHasMore(true);
   };
+
+  // 跳转播放页前保存当前状态到缓存，供返回时恢复
+  const saveStateToCache = () => {
+    if (videos.length === 0) return;
+    const data = { videos, currentPage, hasMore, scrollY: window.scrollY };
+    if (viewMode === 'search' && selectedSource && searchKeyword) {
+      writeCache(selectedSource, `search:${searchKeyword}`, data);
+    } else if (viewMode === 'browse' && selectedSource && selectedCategory) {
+      writeCache(selectedSource, selectedCategory, data);
+    }
+  };
+
+  // videos 渲染完成后恢复滚动位置
+  useEffect(() => {
+    if (pendingScrollRef.current === null || videos.length === 0) return;
+    const y = pendingScrollRef.current;
+    pendingScrollRef.current = null;
+    // 等列表渲染完再滚动
+    requestAnimationFrame(() => {
+      window.scrollTo(0, y);
+    });
+  }, [videos]);
 
   // Intersection Observer for infinite scroll
   useEffect(() => {
@@ -365,6 +554,7 @@ function SourceSearchPageClient() {
                           item.class
                         )}
                         typeName={item.type_name || item.class}
+                        onBeforeNavigate={saveStateToCache}
                         cmsData={{
                           desc: item.desc,
                           episodes: item.episodes,
