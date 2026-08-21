@@ -209,6 +209,14 @@ function SourceSearchPageClient() {
     fetchCategories();
   }, [selectedSource]);
 
+  // 当分类变化时，重置到第一页
+  // 注意：必须声明在视频加载 effect 之前，否则会清空刚恢复的缓存列表
+  useEffect(() => {
+    setCurrentPage(1);
+    setVideos([]);
+    setHasMore(true);
+  }, [selectedCategory]);
+
   // 当选择的分类或页码变化时，加载视频列表（浏览模式）
   useEffect(() => {
     if (viewMode !== 'browse' || !selectedSource || !selectedCategory) return;
@@ -363,9 +371,12 @@ function SourceSearchPageClient() {
     if (pendingScrollRef.current === null || videos.length === 0) return;
     const y = pendingScrollRef.current;
     pendingScrollRef.current = null;
-    // 等列表渲染完再滚动
+    // 双重 rAF + 延时，等懒加载图片和列表渲染稳定后再滚动，尽量精确恢复到原位置
     requestAnimationFrame(() => {
-      window.scrollTo(0, y);
+      requestAnimationFrame(() => {
+        window.scrollTo(0, y);
+        setTimeout(() => window.scrollTo(0, y), 300);
+      });
     });
   }, [videos]);
 
