@@ -137,28 +137,6 @@ function SourceSearchPageClient() {
     router.replace(`/source-search${query ? `?${query}` : ''}`, { scroll: false });
   }, [selectedSource, selectedCategory, currentPage, viewMode, searchKeyword, router]);
 
-  // ---- 缓存浏览模式的视频列表状态 ----
-  useEffect(() => {
-    if (viewMode !== 'browse' || videos.length === 0 || !selectedSource || !selectedCategory) return;
-    writeCache(selectedSource, selectedCategory, {
-      videos,
-      currentPage,
-      hasMore,
-      scrollY: window.scrollY,
-    });
-  }, [videos, currentPage, hasMore, selectedSource, selectedCategory, viewMode]);
-
-  // ---- 缓存搜索模式的视频列表状态 ----
-  useEffect(() => {
-    if (viewMode !== 'search' || videos.length === 0 || !selectedSource || !searchKeyword) return;
-    writeCache(selectedSource, `search:${searchKeyword}`, {
-      videos,
-      currentPage,
-      hasMore,
-      scrollY: window.scrollY,
-    });
-  }, [videos, currentPage, hasMore, selectedSource, searchKeyword, viewMode]);
-
   // 加载用户可用的视频源
   useEffect(() => {
     const fetchApiSites = async () => {
@@ -423,7 +401,9 @@ function SourceSearchPageClient() {
       if (clamped > 0) {
         window.scrollTo(0, clamped);
       }
-      const reached = maxY > 0 && Math.abs(window.scrollY - clamped) < 8;
+      // 页面高度足以容纳目标位置且已滚到目标附近，才算恢复成功；
+      // 若页面高度还不足（图片懒加载未撑开），继续等待并追进，避免只滚到一半。
+      const reached = maxY >= targetY && Math.abs(window.scrollY - targetY) < 8;
       attempts++;
       if (!reached && attempts < maxAttempts) {
         setTimeout(tryScroll, 100);
