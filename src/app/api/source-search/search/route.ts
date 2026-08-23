@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { cachedFetch } from '@/lib/cf-cache';
 import { API_CONFIG, getAvailableApiSites } from '@/lib/config';
 import { SearchResult } from '@/lib/types';
 
@@ -63,65 +64,86 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 请求搜索结果
-    const searchUrl = `${targetSite.api}?ac=videolist&wd=${encodeURIComponent(keyword)}&pg=${page}`;
-    const searchResponse = await fetch(searchUrl, {
-      headers: API_CONFIG.search.headers,
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!searchResponse.ok) {
-      throw new Error('搜索失败');
-    }
-
-    const searchData: CmsVideoResponse = await searchResponse.json();
-
-    if (!searchData.list || !Array.isArray(searchData.list)) {
-      return NextResponse.json({
-        results: [],
-        total: 0,
-        page: parseInt(page),
-        pageCount: 0,
-      });
-    }
-
-    // 转换为 SearchResult 格式
-    const results: SearchResult[] = searchData.list.map((item) => {
-      const episodes: string[] = [];
-      const episodes_titles: string[] = [];
-
-      // 解析播放信息
-      if (item.vod_play_url && item.vod_play_from) {
-        const playUrls = item.vod_play_url.split('#');
-        playUrls.forEach((episodeStr) => {
-          if (episodeStr.trim()) {
-            const [name, url] = episodeStr.split('$');
-            if (name && url) {
-              episodes.push(url.trim());
-              episodes_titles.push(name.trim());
-            }
-          }
+    // 搜索结果一般稳定，用边缘缓存 5 分钟，重复搜索直接返回
+    const cacheKey = `${request.nextUrl.origin}/api/source-search/search?source=${encodeURIComponent(sourceKey)}&keyword=${encodeURIComponent(keyword)}&page=${page}`;
+    const { json } = await cachedFetch<{
+      results: SearchResult[];
+      total: number;
+      page: number;
+      pageCount: number;
+    }>(
+      cacheKey,
+      300,
+      async () => {
+        // 请求搜索结果
+        const searchUrl = `${targetSite.api}?ac=videolist&wd=${encodeURIComponent(keyword)}&pg=${page}`;
+        const searchResponse = await fetch(searchUrl, {
+          headers: API_CONFIG.search.headers,
+          signal: AbortSignal.timeout(10000),
         });
+
+        if (!searchResponse.ok) {
+          throw new Error('搜索失败');
+        }
+
+        const searchData: CmsVideoResponse = await searchResponse.json();
+
+        if (!searchData.list || !Array.isArray(searchData.list)) {
+          return {
+            status: 200,
+            json: {
+              results: [],
+              total: 0,
+              page: parseInt(page),
+              pageCount: 0,
+            },
+          };
+        }
+
+        // 转换为 SearchResult 格式
+        const results: SearchResult[] = searchData.list.map((item) => {
+          const episodes: string[] = [];
+          const episodes_titles: string[] = [];
+
+          // 解析播放信息
+          if (item.vod_play_url && item.vod_play_from) {
+            const playUrls = item.vod_play_url.split('#');
+            playUrls.forEach((episodeStr) => {
+              if (episodeStr.trim()) {
+                const [name, url] = episodeStr.split('$');
+                if (name && url) {
+                  episodes.push(url.trim());
+                  episodes_titles.push(name.trim());
+                }
+              }
+            });
+          }
+
+          return {
+            id: item.vod_id.toString(),
+            title: item.vod_name,
+            poster: item.vod_pic || '',
+            year: item.vod_year || 'unknown',
+            episodes,
+            episodes_titles,
+            source: targetSite.key,
+            source_name: targetSite.name,
+          };
+        });
+
+        return {
+          status: 200,
+          json: {
+            results,
+            total: searchData.total || 0,
+            page: parseInt(page),
+            pageCount: searchData.pagecount || 0,
+          },
+        };
       }
+    );
 
-      return {
-        id: item.vod_id.toString(),
-        title: item.vod_name,
-        poster: item.vod_pic || '',
-        year: item.vod_year || 'unknown',
-        episodes,
-        episodes_titles,
-        source: targetSite.key,
-        source_name: targetSite.name,
-      };
-    });
-
-    return NextResponse.json({
-      results,
-      total: searchData.total || 0,
-      page: parseInt(page),
-      pageCount: searchData.pagecount || 0,
-    });
+    return NextResponse.json(json);
   } catch (error) {
     console.error('Failed to search videos:', error);
     return NextResponse.json({ error: '搜索失败' }, { status: 500 });
