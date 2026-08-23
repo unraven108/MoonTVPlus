@@ -3,6 +3,7 @@
 
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
 import { SearchResult } from '@/lib/types';
@@ -18,7 +19,49 @@ interface DuanjuSource {
   typeName?: string;
 }
 
+// ---- 视频列表缓存（sessionStorage），用于从播放页返回时恢复 ----
+interface DuanjuCacheData {
+  videos: SearchResult[];
+  currentPage: number;
+  hasMore: boolean;
+  scrollY: number;
+}
+
+const CACHE_PREFIX = 'duanju-cache:';
+
+function readCache(source: string, key: string): DuanjuCacheData | null {
+  try {
+    const raw = sessionStorage.getItem(`${CACHE_PREFIX}${source}:${key}`);
+    return raw ? (JSON.parse(raw) as DuanjuCacheData) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(source: string, key: string, data: DuanjuCacheData) {
+  try {
+    sessionStorage.setItem(`${CACHE_PREFIX}${source}:${key}`, JSON.stringify(data));
+  } catch {
+    // sessionStorage 不可用时静默忽略
+  }
+}
+
 function DuanjuPageClient() {
+  const router = useRouter();
+  // 首次挂载不替换 URL，保留原始参数
+  const initializedRef = useRef(false);
+  const hasSyncedRef = useRef(false);
+  // 已尝试恢复缓存的 key，避免重复恢复
+  const restoredCacheKeyRef = useRef<string | null>(null);
+  // 恢复缓存后用于跳过因 currentPage 变化触发的重复请求
+  const restoredPageRef = useRef<number | null>(null);
+  // 待恢复的滚动位置
+  const pendingScrollRef = useRef<number | null>(null);
+  // 初始 URL 参数
+  const urlSourceRef = useRef('');
+  const urlCategoryRef = useRef('');
+  const urlPageRef = useRef(1);
+
   const [sources, setSources] = useState<DuanjuSource[]>([]);
   const [selectedSource, setSelectedSource] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -33,6 +76,33 @@ function DuanjuPageClient() {
   const startXRef = useRef(0);
   const scrollLeftRef = useRef(0);
 
+  // ---- 挂载时从 URL 恢复初始状态（source/category/page） ----
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    urlSourceRef.current = params.get('source') || '';
+    urlCategoryRef.current = params.get('category') || '';
+    urlPageRef.current = parseInt(params.get('page') || '1', 10) || 1;
+    if (urlPageRef.current > 1) {
+      setCurrentPage(urlPageRef.current);
+    }
+  }, []);
+
+  // ---- 状态变化时同步到 URL，返回/刷新时保持状态 ----
+  useEffect(() => {
+    if (!hasSyncedRef.current) {
+      hasSyncedRef.current = true;
+      return; // 首次挂载不替换 URL，保留原始参数
+    }
+    if (!selectedSource || !selectedCategory) return;
+    const params = new URLSearchParams();
+    params.set('source', selectedSource);
+    params.set('category', selectedCategory);
+    if (currentPage > 1) params.set('page', String(currentPage));
+    router.replace(`/duanju?${params.toString()}`, { scroll: false });
+  }, [selectedSource, selectedCategory, currentPage, router]);
+
   useEffect(() => {
     const fetchSources = async () => {
       setIsLoadingSources(true);
@@ -42,8 +112,12 @@ function DuanjuPageClient() {
         if (data.code === 200 && Array.isArray(data.data)) {
           setSources(data.data);
           if (data.data.length > 0) {
-            setSelectedSource(data.data[0].key);
-            setSelectedCategory(data.data[0].typeId || '');
+            // 优先选择 URL 中指定的源，否则默认第一个
+            const urlSource = urlSourceRef.current;
+            const valid = data.data.find((s: DuanjuSource) => s.key === urlSource);
+            const src = valid || data.data[0];
+            setSelectedSource(src.key);
+            setSelectedCategory(urlCategoryRef.current || src.typeId || '');
           }
         }
       } catch (error) {
@@ -67,6 +141,32 @@ function DuanjuPageClient() {
 
   useEffect(() => {
     if (!selectedSource || !selectedCategory) return;
+
+    const cacheKey = `${selectedSource}:${selectedCategory}`;
+
+    // 列表为空时，尝试从缓存恢复（从播放页返回/刷新场景）
+    if (videos.length === 0 && restoredCacheKeyRef.current !== cacheKey) {
+      restoredCacheKeyRef.current = cacheKey;
+      const cached = readCache(selectedSource, selectedCategory);
+      if (cached && cached.videos.length > 0) {
+        // 恢复页码（如果与 URL 中的 page 不一致）
+        if (cached.currentPage !== currentPage) {
+          restoredPageRef.current = cached.currentPage;
+          setCurrentPage(cached.currentPage);
+        }
+        setVideos(cached.videos);
+        setHasMore(cached.hasMore);
+        // 恢复滚动位置（由常驻滚动监视器执行）
+        pendingScrollRef.current = cached.scrollY;
+        return; // 跳过 fetch
+      }
+    }
+
+    // 如果刚刚恢复了缓存且页码已同步，跳过因 currentPage 变化触发的 fetch
+    if (restoredPageRef.current !== null && restoredPageRef.current === currentPage && videos.length > 0) {
+      restoredPageRef.current = null;
+      return;
+    }
 
     const fetchVideos = async () => {
       setIsLoadingVideos(true);
@@ -112,6 +212,55 @@ function DuanjuPageClient() {
       observer.disconnect();
     };
   }, [hasMore, isLoadingVideos]);
+
+  // 跳转播放页前保存当前状态到缓存，供返回时恢复
+  const saveStateToCache = () => {
+    if (videos.length === 0 || !selectedSource || !selectedCategory) return;
+    writeCache(selectedSource, selectedCategory, {
+      videos,
+      currentPage,
+      hasMore,
+      scrollY: window.scrollY,
+    });
+  };
+
+  // ---- 恢复滚动位置（常驻监视器）----
+  // 不依赖 videos 渲染时序：只要恢复缓存时设置了 pendingScrollRef，
+  // 就每 100ms 尝试滚动到目标，页面高度足够且到达目标即完成；超时（3 秒）放弃。
+  useEffect(() => {
+    let attempts = 0;
+    const timer = setInterval(() => {
+      const targetY = pendingScrollRef.current;
+      if (targetY === null) return;
+      attempts++;
+      if (attempts > 30) {
+        pendingScrollRef.current = null;
+        return;
+      }
+      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      if (maxY < targetY) return; // 图片懒加载未撑开页面，继续等待
+      window.scrollTo(0, targetY);
+      if (Math.abs(window.scrollY - targetY) < 8) {
+        pendingScrollRef.current = null; // 到达目标
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 从播放页返回（浏览器后退）时，若组件实例被 Next.js 复用而未重新挂载，
+  // 上面的恢复逻辑不会重新运行；pageshow 时从缓存补一次滚动恢复。
+  useEffect(() => {
+    const onPageShow = () => {
+      if (videos.length === 0 || pendingScrollRef.current !== null) return;
+      if (!selectedSource || !selectedCategory) return;
+      const cached = readCache(selectedSource, selectedCategory);
+      if (cached && cached.scrollY > 0) {
+        pendingScrollRef.current = cached.scrollY;
+      }
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
+  }, [videos, selectedSource, selectedCategory]);
 
   return (
     <PageLayout activePath='/duanju'>
@@ -245,6 +394,7 @@ function DuanjuPageClient() {
                         from='source-search'
                         type='tv'
                         isDuanju
+                        onBeforeNavigate={saveStateToCache}
                         cmsData={{
                           desc: item.desc,
                           episodes: item.episodes,

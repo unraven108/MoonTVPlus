@@ -9807,14 +9807,18 @@ function PlayPageClient() {
               {/* 操作按钮 */}
               <div className='space-y-3'>
                 <button
-                  onClick={() =>
-                    videoTitle
-                      ? router.push(`/search?q=${encodeURIComponent(videoTitle)}`)
-                      : router.back()
-                  }
+                  onClick={() => {
+                    // 优先返回上一页，避免破坏导航栈（返回原列表页）；
+                    // 仅在无历史可回时（如直接访问 /play）才跳转搜索
+                    if (window.history.length > 1) {
+                      router.back();
+                    } else {
+                      router.push(`/search?q=${encodeURIComponent(videoTitle || '')}`);
+                    }
+                  }}
                   className='w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-600 px-6 py-3 font-medium text-white shadow-lg transition-all duration-200 hover:scale-105 hover:from-green-600 hover:to-emerald-700 hover:shadow-xl'
                 >
-                  {videoTitle ? '🔍 返回搜索' : '← 返回上页'}
+                  ← 返回上页
                 </button>
 
                 <button
