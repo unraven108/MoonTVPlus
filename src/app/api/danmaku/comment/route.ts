@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 // 获取弹幕 API 路由
 import { NextRequest, NextResponse } from 'next/server';
 
