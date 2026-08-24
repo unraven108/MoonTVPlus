@@ -6942,8 +6942,11 @@ const VideoSourceConfig = ({
   }, [applyRecommendedWeights]);
 
   const handleResetWeightDraft = useCallback(() => {
-    setWeightDraftSources(sources.map((source) => ({ ...source })));
-  }, [sources]);
+    // 将所有视频源权重归零
+    setWeightDraftSources((prev) =>
+      prev.map((source) => ({ ...source, weight: 0 }))
+    );
+  }, []);
 
   const handleWeightModalDragEnd = useCallback(
     (event: any) => {
@@ -8102,7 +8105,7 @@ const VideoSourceConfig = ({
                       onClick={handleResetWeightDraft}
                       className={buttonStyles.secondarySmall}
                     >
-                      恢复当前配置
+                      权重归零
                     </button>
                   </div>
                 </div>

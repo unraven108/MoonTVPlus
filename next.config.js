@@ -45,12 +45,16 @@ const createNextConfig = (phase) => {
     '@libsql/isomorphic-ws',
     '@libsql/isomorphic-fetch',
     'libsql',
+    'better-sqlite3',
   ],
 
   experimental: {
     instrumentationHook: process.env.NODE_ENV === 'production' && !isEdgeBuild,
     optimizePackageImports: optimizedPackageImports,
-    webpackBuildWorker: !isEdgeBuild,
+    // 必须禁用 webpackBuildWorker：Next 14.2 在 Windows 上该特性会导致
+    // worker 进程破坏 node_modules（依赖包内容被清空，build 报 MODULE_NOT_FOUND）。
+    // 用主进程构建（较慢但稳定）。
+    webpackBuildWorker: false,
     // Next 14.2 仍可能读取此字段；与 serverExternalPackages 保持一致
     serverComponentsExternalPackages: [
       '@libsql/client',
@@ -58,6 +62,7 @@ const createNextConfig = (phase) => {
       '@libsql/isomorphic-ws',
       '@libsql/isomorphic-fetch',
       'libsql',
+      'better-sqlite3',
     ],
   },
 
@@ -167,6 +172,15 @@ const createNextConfig = (phase) => {
           typeof external === 'object' &&
           Object.prototype.hasOwnProperty.call(external, 'better-sqlite3')
         );
+      });
+    }
+
+    // Server 端（非 Edge 构建）把原生模块 external，避免 webpack 尝试解析打包。
+    // db.ts 等模块中的 require('better-sqlite3') 会被静态追踪，原生模块无法打包。
+    if (isServer && !isEdgeBuild) {
+      config.externals = config.externals || [];
+      config.externals.push({
+        'better-sqlite3': 'commonjs better-sqlite3',
       });
     }
 

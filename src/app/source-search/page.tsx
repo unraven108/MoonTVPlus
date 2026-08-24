@@ -9,6 +9,7 @@ import { isAnimeCategoryText } from '@/lib/anime-keyword-expr';
 import { ApiSite } from '@/lib/config';
 import { appendSpecialSourceParam } from '@/lib/special-source.client';
 import { SearchResult } from '@/lib/types';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import PageLayout from '@/components/PageLayout';
@@ -62,8 +63,6 @@ function SourceSearchPageClient() {
   const restoredCacheKeyRef = useRef<string | null>(null);
   // 恢复缓存后用于跳过因 currentPage 变化触发的重复请求
   const restoredPageRef = useRef<number | null>(null);
-  // 待恢复的滚动位置，videos 渲染完成后滚动
-  const pendingScrollRef = useRef<number | null>(null);
   // 初始 URL 参数
   const urlSourceRef = useRef('');
   const urlCategoryRef = useRef('');
@@ -110,6 +109,13 @@ function SourceSearchPageClient() {
       // 浏览模式也从 URL 恢复页码
       setCurrentPage(urlPageRef.current);
     }
+    // 直接从 URL 恢复选中状态（不等待 fetch 验证源/分类）：
+    // 从播放页返回重挂载时，若等 fetch sources → fetch categories 链完成
+    // （依赖外部源站 API，可能耗时数秒甚至超时），缓存恢复会被阻塞，
+    // 导致滚动恢复超过监视器窗口而失败。URL 里的 source/category 是上次
+    // 已验证的有效值，可直接使用；fetch 完成后若值无效会被覆盖为有效值。
+    if (urlSourceRef.current) setSelectedSource(urlSourceRef.current);
+    if (urlCategoryRef.current) setSelectedCategory(urlCategoryRef.current);
   }, []);
 
   // ---- 状态变化时同步到 URL，返回/刷新时保持状态 ----
@@ -118,10 +124,8 @@ function SourceSearchPageClient() {
       hasSyncedRef.current = true;
       return; // 首次挂载不替换 URL，保留原始参数
     }
-    // 初始化未完成前不覆盖 URL，避免丢失 category/page 参数
+    // 初始化未完成前不覆盖 URL；源未就绪前不写 URL，避免空窗期丢失 source
     if (!selectedSource) return;
-    if (viewMode === 'browse' && !selectedCategory) return;
-    if (viewMode === 'search' && !searchKeyword) return;
 
     const params = new URLSearchParams();
     if (selectedSource) params.set('source', selectedSource);
@@ -170,7 +174,8 @@ function SourceSearchPageClient() {
       setCategories([]);
       setSelectedCategory('');
       setVideos([]);
-      setCurrentPage(1);
+      // 不在此重置 currentPage：从播放页返回重挂载时，页码应由 URL/缓存恢复；
+      // 用户主动切换源的页码重置由 handleBackToBrowse 完成。
       setHasMore(true);
       try {
         const response = await fetch(
@@ -199,10 +204,11 @@ function SourceSearchPageClient() {
     fetchCategories();
   }, [selectedSource]);
 
-  // 当分类变化时，重置到第一页
-  // 注意：必须声明在视频加载 effect 之前，否则会清空刚恢复的缓存列表
+  // 当分类变化时，重置视频列表。
+  // 注意：页码重置不在此处做——从播放页返回恢复场景需保留 URL 页码，
+  // 用户主动切换分类的页码重置在分类 CapsuleSwitch onChange 中处理。
+  // 此 effect 必须声明在视频加载 effect 之前，否则会清空刚恢复的缓存列表
   useEffect(() => {
-    setCurrentPage(1);
     setVideos([]);
     setHasMore(true);
   }, [selectedCategory]);
@@ -241,9 +247,7 @@ function SourceSearchPageClient() {
         }
         setVideos(cached.videos);
         setHasMore(cached.hasMore);
-        // 恢复滚动位置（由常驻滚动监视器执行）
-        pendingScrollRef.current = cached.scrollY;
-        console.log('[source-search] restore scroll set', { scrollY: cached.scrollY });
+        console.log('[source-search] restore data from cache', { scrollY: cached.scrollY });
         return; // 跳过 fetch
       }
     }
@@ -308,7 +312,6 @@ function SourceSearchPageClient() {
         }
         setVideos(cached.videos);
         setHasMore(cached.hasMore);
-        pendingScrollRef.current = cached.scrollY;
         return; // 跳过 fetch
       }
     }
@@ -366,10 +369,20 @@ function SourceSearchPageClient() {
     setHasMore(true);
   };
 
-  // 跳转播放页前保存当前状态到缓存，供返回时恢复
+  // 列表滚动位置保存/恢复：从播放页返回时恢复到之前浏览的位置
+  const { saveScroll: saveSourceScroll } = useListScrollRestoration({
+    prefix: 'source-search',
+    getFilterKey: () =>
+      viewMode === 'search'
+        ? `${selectedSource}:search:${searchKeyword}`
+        : `${selectedSource}:${selectedCategory}`,
+    ready: !isLoadingVideos && videos.length > 0,
+  });
+
+  // 跳转播放页前保存当前状态到缓存（数据），并保存滚动位置
   const saveStateToCache = () => {
     if (videos.length === 0) return;
-    const data = { videos, currentPage, hasMore, scrollY: window.scrollY };
+    const data = { videos, currentPage, hasMore, scrollY: 0 };
     if (viewMode === 'search' && selectedSource && searchKeyword) {
       console.log('[source-search] saveStateToCache search', {
         cacheKey: `${selectedSource}:search:${searchKeyword}`,
@@ -381,54 +394,11 @@ function SourceSearchPageClient() {
       cacheKey: `${selectedSource}:${selectedCategory}`,
       videosLen: videos.length,
       currentPage,
-      scrollY: data.scrollY,
     });
       writeCache(selectedSource, selectedCategory, data);
     }
+    saveSourceScroll();
   };
-
-  // ---- 恢复滚动位置（常驻监视器）----
-  // 不依赖 videos 渲染时序：只要恢复缓存时设置了 pendingScrollRef，
-  // 就每 100ms 尝试滚动到目标，页面高度足够且到达目标即完成；超时（3 秒）放弃，避免阻塞手动滚动。
-  useEffect(() => {
-    let attempts = 0;
-    const timer = setInterval(() => {
-      const targetY = pendingScrollRef.current;
-      if (targetY === null) return;
-      attempts++;
-      if (attempts > 30) {
-        pendingScrollRef.current = null; // 3 秒仍未成功则放弃
-        return;
-      }
-      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      if (maxY < targetY) return; // 图片懒加载未撑开页面，继续等待
-      window.scrollTo(0, targetY);
-      if (Math.abs(window.scrollY - targetY) < 8) {
-        pendingScrollRef.current = null; // 到达目标
-      }
-    }, 100);
-    return () => clearInterval(timer);
-  }, []);
-
-  // 从播放页返回（浏览器后退）时，若组件实例被 Next.js 复用而未重新挂载，
-  // 上面的恢复逻辑不会重新运行；pageshow 在历史导航/bfcache 恢复后触发，此时从缓存补一次滚动恢复。
-  useEffect(() => {
-    const onPageShow = () => {
-      if (videos.length === 0 || pendingScrollRef.current !== null) return;
-      const key = viewMode === 'search' ? `search:${searchKeyword}` : selectedCategory;
-      if (!selectedSource || !key) return;
-      const cached = readCache(selectedSource, key);
-      if (cached && cached.scrollY > 0) {
-        console.log('[source-search] pageshow restore scroll', {
-          scrollY: cached.scrollY,
-          videosLen: videos.length,
-        });
-        pendingScrollRef.current = cached.scrollY;
-      }
-    };
-    window.addEventListener('pageshow', onPageShow);
-    return () => window.removeEventListener('pageshow', onPageShow);
-  }, [videos, selectedSource, selectedCategory, viewMode, searchKeyword]);
 
   // Intersection Observer for infinite scroll
   useEffect(() => {
@@ -566,7 +536,13 @@ function SourceSearchPageClient() {
                       value: category.id,
                     }))}
                     active={selectedCategory}
-                    onChange={setSelectedCategory}
+                    onChange={(value) => {
+                      setSelectedCategory(value);
+                      // 用户主动切换分类：重置到第一页
+                      setCurrentPage(1);
+                      setVideos([]);
+                      setHasMore(true);
+                    }}
                   />
                 </div>
               )}

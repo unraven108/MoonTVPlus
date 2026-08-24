@@ -74,3 +74,15 @@ scripts/test
 
 .agents/
 skills-lock.json
+
+# 本地启动与工具脚本（不上传）
+/start.cmd
+/scripts/start-server.ps1
+/scripts/rebuild-bins.mjs
+
+# 本地 AI 配置
+/.codebuddy
+
+# 本地运行日志
+.server.log
+.server.err.log

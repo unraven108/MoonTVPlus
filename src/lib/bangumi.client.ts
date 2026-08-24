@@ -240,6 +240,16 @@ function readBangumiCalendarCache(): BangumiCalendarData[] | null {
     const { data, timestamp } = JSON.parse(raw);
     if (!Array.isArray(data) || data.length === 0) return null;
     if (Date.now() - timestamp > BANGUMI_CALENDAR_CACHE_TTL) return null;
+    // 校验结构：weekday.en 必须是非空字符串且带 items 数组，
+    // 否则视为脏缓存（旧版本/损坏数据），忽略并重新请求，避免后续 find 失败
+    const hasValidEntry = data.some(
+      (day: BangumiCalendarData) =>
+        day &&
+        typeof day.weekday?.en === 'string' &&
+        day.weekday.en.length > 0 &&
+        Array.isArray(day.items)
+    );
+    if (!hasValidEntry) return null;
     return data;
   } catch {
     return null;

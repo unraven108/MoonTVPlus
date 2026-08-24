@@ -12,6 +12,7 @@ import {
   MangaShelfItem,
   MangaSource,
 } from '@/lib/manga.types';
+import { usePersistedState } from '@/lib/use-persisted-state';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import MangaCard from '@/components/MangaCard';
@@ -35,8 +36,10 @@ export default function MangaRecommendPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [sources, setSources] = useState<MangaSource[]>([]);
-  const [sourceId, setSourceId] = useState('');
-  const [recommendType, setRecommendType] = useState<MangaRecommendType>('POPULAR');
+  // 源/推荐类型持久化：从详情/阅读页返回时保留浏览位置
+  const [sourceId, setSourceId] = usePersistedState<string>('sourceId', '');
+  const [recommendType, setRecommendType] =
+    usePersistedState<MangaRecommendType>('recommendType', 'POPULAR');
   const [result, setResult] = useState<MangaRecommendResult>({ mangas: [], hasNextPage: false });
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);

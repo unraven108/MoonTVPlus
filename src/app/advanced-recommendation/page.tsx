@@ -5,10 +5,35 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 import { SearchResult } from '@/lib/types';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import PageLayout from '@/components/PageLayout';
 import VideoCard from '@/components/VideoCard';
+
+// ---- 列表数据缓存（sessionStorage），用于从播放页返回时恢复已加载的多页数据 ----
+interface AdvRecCache {
+  videos: SearchResult[];
+  page: number;
+  hasMore: boolean;
+}
+
+function readAdvRecCache(key: string): AdvRecCache | null {
+  try {
+    const raw = sessionStorage.getItem(`advrec-cache:${key}`);
+    return raw ? (JSON.parse(raw) as AdvRecCache) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAdvRecCache(key: string, data: AdvRecCache) {
+  try {
+    sessionStorage.setItem(`advrec-cache:${key}`, JSON.stringify(data));
+  } catch {
+    // sessionStorage 不可用时静默忽略
+  }
+}
 
 interface ScriptSourceOption {
   key: string;
@@ -32,6 +57,25 @@ export default function AdvancedRecommendationPage() {
   const [hasMore, setHasMore] = useState(true);
   const initializedRef = useRef(false);
   const hasSyncedUrlRef = useRef(false);
+  // 已尝试恢复列表缓存的 key
+  const restoredCacheKeyRef = useRef<string | null>(null);
+  // 从缓存恢复的页码（跳过 fetch 重复请求）
+  const restoredPageRef = useRef<number | null>(null);
+
+  // 列表滚动位置保存/恢复：从播放页返回时恢复到之前浏览的位置
+  const { saveScroll: saveAdvScroll } = useListScrollRestoration({
+    prefix: 'advanced-recommendation',
+    getFilterKey: () => selectedSource,
+    ready: !isLoadingVideos && videos.length > 0,
+  });
+
+  // 跳转播放页前：缓存已加载的列表数据 + 保存滚动位置
+  const saveAdvState = () => {
+    if (videos.length > 0) {
+      writeAdvRecCache(selectedSource, { videos, page, hasMore });
+    }
+    saveAdvScroll();
+  };
 
   useEffect(() => {
     const fetchSources = async () => {
@@ -92,6 +136,27 @@ export default function AdvancedRecommendationPage() {
 
   useEffect(() => {
     if (!selectedSource) return;
+
+    // 尝试从缓存恢复已加载的多页数据（从播放页返回场景）
+    if (page === 1 && videos.length === 0 && restoredCacheKeyRef.current !== selectedSource) {
+      restoredCacheKeyRef.current = selectedSource;
+      const cached = readAdvRecCache(selectedSource);
+      if (cached && Array.isArray(cached.videos) && cached.videos.length > 0) {
+        setVideos(cached.videos);
+        setHasMore(cached.hasMore);
+        if (cached.page > 1) {
+          restoredPageRef.current = cached.page;
+          setPage(cached.page);
+        }
+        return; // 跳过 fetch
+      }
+    }
+
+    // 从缓存恢复的页码：数据已包含，跳过 fetch 重复请求
+    if (restoredPageRef.current !== null && restoredPageRef.current === page && videos.length > 0) {
+      restoredPageRef.current = null;
+      return;
+    }
 
     const fetchVideos = async () => {
       setIsLoadingVideos(true);
@@ -205,6 +270,7 @@ export default function AdvancedRecommendationPage() {
                       douban_id={video.douban_id}
                       tmdb_id={video.tmdb_id}
                       from='source-search'
+                      onBeforeNavigate={saveAdvState}
                     />
                   ))}
                 </div>

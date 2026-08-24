@@ -13,13 +13,45 @@ import {
   getDoubanRecommends,
 } from '@/lib/douban.client';
 import { DoubanItem, DoubanResult } from '@/lib/types';
+import { usePersistedState } from '@/lib/use-persisted-state';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 import BangumiScheduleTimeline from '@/components/BangumiScheduleTimeline';
 import DoubanCardSkeleton from '@/components/DoubanCardSkeleton';
 import DoubanCustomSelector from '@/components/DoubanCustomSelector';
 import DoubanSelector from '@/components/DoubanSelector';
+import { triggerGlobalError } from '@/components/GlobalErrorIndicator';
 import PageLayout from '@/components/PageLayout';
 import VideoCard from '@/components/VideoCard';
+
+// ---- 列表数据缓存（sessionStorage），用于从播放/详情页返回时恢复已加载的多页数据 ----
+// douban 列表是无限滚动分页加载，用户滚到深处时已加载多页数据（页面很高）。
+// 返回时组件重新挂载只加载第一页，页面高度远小于离开时，滚动位置无法恢复。
+// 因此在跳转前把已加载的数据/页码缓存起来，返回后直接恢复，页面立即有完整高度。
+interface DoubanListCache {
+  doubanData: DoubanItem[];
+  currentPage: number;
+  hasMore: boolean;
+}
+
+const LIST_CACHE_PREFIX = 'douban-list-cache:';
+
+function readListCache(key: string): DoubanListCache | null {
+  try {
+    const raw = sessionStorage.getItem(`${LIST_CACHE_PREFIX}${key}`);
+    return raw ? (JSON.parse(raw) as DoubanListCache) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeListCache(key: string, data: DoubanListCache) {
+  try {
+    sessionStorage.setItem(`${LIST_CACHE_PREFIX}${key}`, JSON.stringify(data));
+  } catch {
+    // sessionStorage 不可用时静默忽略
+  }
+}
 
 function DoubanPageClient() {
   const searchParams = useSearchParams();
@@ -33,6 +65,10 @@ function DoubanPageClient() {
   const loadingRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // 已尝试恢复列表缓存的 key（避免重复恢复）
+  const restoredListCacheKeyRef = useRef<string | null>(null);
+  // 从缓存恢复的页码（跳过 fetchMore 的重复请求）
+  const restoredPageRef = useRef<number | null>(null);
 
   // 用于存储最新参数值的 refs
   const currentParamsRef = useRef({
@@ -44,6 +80,34 @@ function DoubanPageClient() {
     currentPage: 0,
   });
 
+  // 列表滚动位置保存/恢复：从播放/详情页返回时恢复到之前浏览的位置
+  const { saveScroll: saveDoubanScroll } = useListScrollRestoration({
+    prefix: 'douban',
+    getFilterKey: () =>
+      `${currentParamsRef.current.type}:${currentParamsRef.current.primarySelection}:${currentParamsRef.current.secondarySelection}:${JSON.stringify(
+        currentParamsRef.current.multiLevelSelection
+      )}:${currentParamsRef.current.selectedWeekday}`,
+    ready: selectorsReady && !loading && doubanData.length > 0,
+  });
+
+  // 列表缓存 key（与滚动位置 key 一致，按筛选条件区分）
+  const getListCacheKey = () =>
+    `${currentParamsRef.current.type}:${currentParamsRef.current.primarySelection}:${currentParamsRef.current.secondarySelection}:${JSON.stringify(
+      currentParamsRef.current.multiLevelSelection
+    )}:${currentParamsRef.current.selectedWeekday}`;
+
+  // 跳转播放/详情页前：缓存已加载的列表数据 + 保存滚动位置
+  const saveListState = () => {
+    if (doubanData.length > 0) {
+      writeListCache(getListCacheKey(), {
+        doubanData,
+        currentPage,
+        hasMore,
+      });
+    }
+    saveDoubanScroll();
+  };
+
   const type = searchParams.get('type') || 'movie';
 
   // 获取 runtimeConfig 中的自定义分类数据
@@ -51,31 +115,44 @@ function DoubanPageClient() {
     Array<{ name: string; type: 'movie' | 'tv'; query: string }>
   >([]);
 
-  // 选择器状态 - 完全独立，不依赖URL参数
-  const [primarySelection, setPrimarySelection] = useState<string>(() => {
-    if (type === 'movie') return '热门';
-    if (type === 'tv' || type === 'show') return '最近热门';
-    if (type === 'anime') return '每日放送';
-    return '';
-  });
-  const [secondarySelection, setSecondarySelection] = useState<string>(() => {
-    if (type === 'movie') return '全部';
-    if (type === 'tv') return 'tv';
-    if (type === 'show') return 'show';
-    return '全部';
-  });
+  // 选择器状态 - 完全独立，不依赖URL参数；持久化到 sessionStorage（按 type 区分），
+  // 从详情/播放页返回时恢复上次筛选
+  const [primarySelection, setPrimarySelection] = usePersistedState<string>(
+    'primarySelection',
+    () => {
+      if (type === 'movie') return '热门';
+      if (type === 'tv' || type === 'show') return '最近热门';
+      if (type === 'anime') return '每日放送';
+      return '';
+    },
+    { key: `douban:${type}:primary` }
+  );
+  const [secondarySelection, setSecondarySelection] = usePersistedState<string>(
+    'secondarySelection',
+    () => {
+      if (type === 'movie') return '全部';
+      if (type === 'tv') return 'tv';
+      if (type === 'show') return 'show';
+      return '全部';
+    },
+    { key: `douban:${type}:secondary` }
+  );
 
   // MultiLevelSelector 状态
-  const [multiLevelValues, setMultiLevelValues] = useState<
+  const [multiLevelValues, setMultiLevelValues] = usePersistedState<
     Record<string, string>
-  >({
-    type: 'all',
-    region: 'all',
-    year: 'all',
-    platform: 'all',
-    label: 'all',
-    sort: 'T',
-  });
+  >(
+    'multiLevelValues',
+    {
+      type: 'all',
+      region: 'all',
+      year: 'all',
+      platform: 'all',
+      label: 'all',
+      sort: 'T',
+    },
+    { key: `douban:${type}:multi` }
+  );
 
   // 星期选择器状态 - 默认选中今天
   const getTodayWeekday = (): string => {
@@ -85,15 +162,23 @@ function DoubanPageClient() {
     return weekdayMap[today];
   };
 
-  const [selectedWeekday, setSelectedWeekday] = useState<string>(() => {
-    if (type === 'anime') {
-      return getTodayWeekday();
-    }
-    return '';
-  });
+  const [selectedWeekday, setSelectedWeekday] = usePersistedState<string>(
+    'selectedWeekday',
+    () => {
+      if (type === 'anime') {
+        return getTodayWeekday();
+      }
+      return '';
+    },
+    { key: `douban:${type}:weekday` }
+  );
 
   // 每日放送视图模式：grid(卡片) / schedule(时刻表)
-  const [viewMode, setViewMode] = useState<'grid' | 'schedule'>('grid');
+  const [viewMode, setViewMode] = usePersistedState<'grid' | 'schedule'>(
+    'viewMode',
+    'grid',
+    { key: `douban:${type}:view` }
+  );
 
   // 获取自定义分类数据
   useEffect(() => {
@@ -138,8 +223,21 @@ function DoubanPageClient() {
     setLoading(true); // 立即显示loading状态
   }, [type]);
 
-  // 当type变化时重置选择器状态
+  // 当 type 变化时重置选择器状态（首次挂载保留 usePersistedState 恢复的值）
+  const prevTypeRef = useRef(type);
   useEffect(() => {
+    const typeChanged = prevTypeRef.current !== type;
+    prevTypeRef.current = type;
+
+    // 首次挂载：不重置，保留从 sessionStorage 恢复的筛选；仅标记选择器就绪
+    if (!typeChanged) {
+      const timer = setTimeout(() => {
+        setSelectorsReady(true);
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+
+    // type 变化：重置为默认
     if (type === 'custom' && customCategories.length > 0) {
       // 自定义分类模式：优先选择 movie，如果没有 movie 则选择 tv
       const types = Array.from(
@@ -205,6 +303,24 @@ function DoubanPageClient() {
     }, 50);
 
     return () => clearTimeout(timer);
+  }, [type, customCategories]);
+
+  // custom 模式：分类加载完成后，若选择器为空（无恢复值）则设置默认
+  useEffect(() => {
+    if (type !== 'custom' || customCategories.length === 0) return;
+    if (currentParamsRef.current.primarySelection) return;
+    const types = Array.from(
+      new Set(customCategories.map((cat) => cat.type))
+    );
+    if (types.length === 0) return;
+    const selectedType = types.includes('movie') ? 'movie' : types[0];
+    setPrimarySelection(selectedType);
+    const firstCategory = customCategories.find(
+      (cat) => cat.type === selectedType
+    );
+    if (firstCategory) {
+      setSecondarySelection(firstCategory.query);
+    }
   }, [type, customCategories]);
 
   // 生成骨架屏数据
@@ -310,9 +426,18 @@ function DoubanPageClient() {
         }
       } else if (type === 'anime' && primarySelection === '每日放送') {
         const calendarData = await GetBangumiCalendarData();
-        const weekdayData = calendarData.find(
-          (item) => item.weekday.en === selectedWeekday
-        );
+        // 优先使用选中的星期；若选中的星期无效/已过期（如持久化的旧日期），
+        // 依次降级为今天、第一个有内容的星期，避免整个页面空白
+        const weekdayData =
+          calendarData.find(
+            (item) => item.weekday.en === selectedWeekday
+          ) ||
+          calendarData.find(
+            (item) => item.weekday.en === getTodayWeekday()
+          ) ||
+          calendarData.find(
+            (item) => item.items && item.items.length > 0
+          );
         if (weekdayData) {
           data = {
             code: 200,
@@ -390,6 +515,9 @@ function DoubanPageClient() {
           setLoading(false);
         } else {
           console.log('参数不一致，不执行任何操作，避免设置过期数据');
+          // 关键：即使参数不一致也必须结束 loading，
+          // 否则切换分类/快速操作后页面会一直显示骨架屏（"一直转圈"）
+          setLoading(false);
         }
         // 如果参数不一致，不执行任何操作，避免设置过期数据
       } else {
@@ -398,6 +526,13 @@ function DoubanPageClient() {
     } catch (err) {
       console.error(err);
       setLoading(false); // 发生错误时总是停止loading状态
+      // 动漫「每日放送」依赖 Bangumi 外部数据源，失败时给出明确提示，
+      // 避免用户只看到空白页而不知道原因
+      if (type === 'anime' && primarySelection === '每日放送') {
+        triggerGlobalError(
+          '动漫数据加载失败，请检查网络或「设置-动漫数据源」，稍后重试'
+        );
+      }
     }
   }, [
     type,
@@ -414,6 +549,26 @@ function DoubanPageClient() {
     // 只有在选择器准备好时才开始加载
     if (!selectorsReady) {
       return;
+    }
+
+    // 尝试从缓存恢复已加载的多页列表数据（从播放/详情页返回场景）：
+    // 恢复后跳过初始请求，页面立即有完整高度，配合滚动位置恢复
+    const cacheKey = getListCacheKey();
+    if (doubanData.length === 0 && restoredListCacheKeyRef.current !== cacheKey) {
+      restoredListCacheKeyRef.current = cacheKey;
+      const cached = readListCache(cacheKey);
+      if (cached && cached.doubanData.length > 0) {
+        setDoubanData(cached.doubanData);
+        setHasMore(cached.hasMore);
+        // 关键：恢复正常 loading 状态，否则页面一直显示骨架屏（type effect 设过 setLoading(true)）
+        setLoading(false);
+        if (cached.currentPage > 0) {
+          // 恢复页码，fetchMore effect 会用 restoredPageRef 跳过重复请求
+          restoredPageRef.current = cached.currentPage;
+          setCurrentPage(cached.currentPage);
+        }
+        return; // 跳过 loadInitialData
+      }
     }
 
     // 清除之前的防抖定时器
@@ -445,6 +600,16 @@ function DoubanPageClient() {
   // 单独处理 currentPage 变化（加载更多）
   useEffect(() => {
     if (currentPage > 0) {
+      // 从缓存恢复的页码：数据已包含，跳过 fetchMore 的重复请求
+      if (
+        restoredPageRef.current !== null &&
+        restoredPageRef.current === currentPage &&
+        doubanData.length > 0
+      ) {
+        restoredPageRef.current = null;
+        return;
+      }
+
       const fetchMoreData = async () => {
         // 创建当前参数的快照
         const requestSnapshot = {
@@ -849,6 +1014,7 @@ function DoubanPageClient() {
                           type === 'anime' && primarySelection === '每日放送'
                         }
                         isAnime={type === 'anime'}
+                        onBeforeNavigate={saveListState}
                       />
                     </div>
                   ))}

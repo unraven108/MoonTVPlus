@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import { Favorite, getAllFavorites, getAllPlayRecords, PlayRecord } from '@/lib/db.client';
+import { usePersistedState } from '@/lib/use-persisted-state';
 
 import TVLayout from '@/components/tv/TVLayout';
 
@@ -24,13 +25,14 @@ function getLogoUrl(logo?: string, source?: string) {
 export default function TVLivePage() {
   const router = useRouter();
   const [sources, setSources] = useState<LiveSource[]>([]);
-  const [source, setSource] = useState<string>('');
+  // 源/分组/搜索词/展开数持久化：从播放页返回时保留浏览位置
+  const [source, setSource] = usePersistedState<string>('source', '');
   const [channels, setChannels] = useState<LiveChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedGroup, setSelectedGroup] = useState('全部');
-  const [query, setQuery] = useState('');
-  const [visibleCount, setVisibleCount] = useState(120);
+  const [selectedGroup, setSelectedGroup] = usePersistedState<string>('selectedGroup', '全部');
+  const [query, setQuery] = usePersistedState<string>('query', '');
+  const [visibleCount, setVisibleCount] = usePersistedState<number>('visibleCount', 120);
   const [quickChannels, setQuickChannels] = useState<Array<{ source: string; id: string; title: string; cover?: string; type: '最近' | '收藏' }>>([]);
   const [lastChannel, setLastChannel] = useState<LastLiveChannel | null>(null);
 
@@ -63,7 +65,8 @@ export default function TVLivePage() {
       .then((data) => {
         const list = data.data || [];
         setSources(list);
-        if (list[0]?.key) setSource(list[0].key);
+        // 仅在未恢复源时设置默认第一个源，避免覆盖返回时恢复的选择
+        if (list[0]?.key) setSource((prev) => prev || list[0].key);
       })
       .catch((err) => setError(err instanceof Error ? err.message : '获取直播源失败'))
       .finally(() => setLoading(false));

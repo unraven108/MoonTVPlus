@@ -8,6 +8,7 @@ import { useEffect, useMemo,useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { base58Encode } from '@/lib/utils';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import PageLayout from '@/components/PageLayout';
@@ -105,6 +106,15 @@ export default function PrivateLibraryPage() {
   const scrollLeftRef = useRef(0);
   const isInitializedRef = useRef(false);
   const hasRestoredViewRef = useRef(false);
+
+  // 列表滚动位置保存/恢复：从播放/详情页返回时恢复到之前浏览的位置
+  // （OpenList / Emby 列表视图；小雅为文件夹浏览，不参与恢复）
+  const { saveScroll: saveLibraryScroll } = useListScrollRestoration({
+    prefix: 'private-library',
+    getFilterKey: () =>
+      `${sourceType}:${embyKey || ''}:${selectedView}:${sortBy}:${sortOrder}:${openlistCategory}:${xiaoyaPath}`,
+    ready: !loading && videos.length > 0,
+  });
 
   // 客户端挂载标记
   useEffect(() => {
@@ -557,6 +567,7 @@ export default function PrivateLibraryPage() {
   }, [sourceType, embyKey, page, selectedView, xiaoyaPath, runtimeConfig, sortBy, sortOrder, openlistCategory]);
 
   const handleVideoClick = (video: Video) => {
+    saveLibraryScroll();
     // 构建source参数
     let sourceParam = sourceType;
     if (sourceType === 'emby' && embyKey && embySourceOptions.length > 1) {
@@ -1159,6 +1170,7 @@ export default function PrivateLibraryPage() {
                         : ''
                     }
                     from='search'
+                    onBeforeNavigate={saveLibraryScroll}
                   />
                 );
               })}

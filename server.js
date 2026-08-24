@@ -12,6 +12,37 @@ const {
   updateTVRemoteDevice,
 } = require('./src/lib/tv-remote-hub.js');
 
+// ============ 加载 .env.local 并覆盖同名环境变量 ============
+// 解决 Windows 系统保留变量 USERNAME 顶掉站长账号等问题。
+// 仅本地存在 .env.local 时生效；Cloudflare/Docker 部署无此文件，不受影响。
+(function loadEnvLocal() {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const envPath = path.join(__dirname, '.env.local');
+    if (!fs.existsSync(envPath)) return;
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx <= 0) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (key) process.env[key] = value;
+    }
+    console.log('[server] Loaded .env.local');
+  } catch (e) {
+    console.warn('[server] Failed to load .env.local:', e.message);
+  }
+})();
+
 function shouldInitSQLite() {
   const isCloudflare = process.env.CF_PAGES === '1' || process.env.BUILD_TARGET === 'cloudflare';
   return process.env.NEXT_PUBLIC_STORAGE_TYPE === 'd1' && !isCloudflare && process.env.MOONTV_LITE !== 'true';

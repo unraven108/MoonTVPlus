@@ -33,6 +33,7 @@ import ScrollableRow from '@/components/ScrollableRow';
 import { useSite } from '@/components/SiteProvider';
 import Toast, { ToastProps } from '@/components/Toast';
 import VideoCard from '@/components/VideoCard';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 // 首页模块配置接口
 interface HomeModule {
@@ -54,6 +55,13 @@ function HomeClient() {
   >([]);
   const [loading, setLoading] = useState(true);
   const { announcement, announcementDisplayMode } = useSite();
+
+  // 列表滚动位置保存/恢复：从播放/详情页返回时恢复到之前浏览的位置
+  const { saveScroll: saveHomeScroll } = useListScrollRestoration({
+    prefix: 'home',
+    getFilterKey: () => 'home',
+    ready: !loading,
+  });
   // 首页模块配置状态
   const [homeModules, setHomeModules] = useState<HomeModule[]>([
     { id: 'hotMovies', name: '热门电影', enabled: true, order: 0 },
@@ -607,6 +615,7 @@ function HomeClient() {
                         type='movie'
                         from='douban'
                         douban_id={movie.id ? parseInt(movie.id) : undefined}
+                        onBeforeNavigate={saveHomeScroll}
                       />
                     </div>
                   ))}
@@ -662,6 +671,7 @@ function HomeClient() {
                           episodes: duanju.episodes,
                           episodes_titles: duanju.episodes_titles,
                         }}
+                        onBeforeNavigate={saveHomeScroll}
                       />
                     </div>
                   ))}
@@ -734,6 +744,7 @@ function HomeClient() {
                           rate={anime.rating?.score?.toFixed(1) || ''}
                           year={anime.air_date?.split('-')?.[0] || ''}
                           isBangumi={true}
+                          onBeforeNavigate={saveHomeScroll}
                         />
                       </div>
                     ));
@@ -782,6 +793,7 @@ function HomeClient() {
                         type='tv'
                         from='douban'
                         douban_id={tvShow.id ? parseInt(tvShow.id) : undefined}
+                        onBeforeNavigate={saveHomeScroll}
                       />
                     </div>
                   ))}
@@ -831,6 +843,7 @@ function HomeClient() {
                         douban_id={
                           varietyShow.id ? parseInt(varietyShow.id) : undefined
                         }
+                        onBeforeNavigate={saveHomeScroll}
                       />
                     </div>
                   ))}
@@ -867,6 +880,7 @@ function HomeClient() {
                     tmdb_id={item.id}
                     releaseDate={item.release_date}
                     isUpcoming={true}
+                    onBeforeNavigate={saveHomeScroll}
                   />
                 </div>
               ))}

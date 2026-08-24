@@ -7,6 +7,7 @@ import {
   BangumiCalendarData,
   GetBangumiCalendarData,
 } from '@/lib/bangumi.client';
+import { usePersistedState } from '@/lib/use-persisted-state';
 
 import TVCard from '@/components/tv/TVCard';
 import TVLayout from '@/components/tv/TVLayout';
@@ -53,11 +54,13 @@ export default function TVAnimePage() {
   const [calendar, setCalendar] = useState<BangumiCalendarData[]>([]);
   const [rows, setRows] = useState<TVSection[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeDay, setActiveDay] = useState('');
+  // 持久化选中的星期：从详情页返回时保留
+  const [activeDay, setActiveDay] = usePersistedState<string>('activeDay', '');
 
   useEffect(() => {
     const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    setActiveDay(weekdays[new Date().getDay()]);
+    // 仅在未恢复（空值）时设置今天，避免覆盖从详情页返回时的选择
+    setActiveDay((prev) => prev || weekdays[new Date().getDay()]);
   }, []);
 
   useEffect(() => {

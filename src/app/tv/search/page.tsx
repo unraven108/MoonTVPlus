@@ -7,6 +7,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { addSearchHistory, getSearchHistory } from '@/lib/db.client';
 import { SearchResult } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
+import { usePersistedState } from '@/lib/use-persisted-state';
 
 import TVLayout from '@/components/tv/TVLayout';
 
@@ -73,11 +74,12 @@ function getTVDetailUrl(item: TVSearchDisplayItem) {
 }
 
 export default function TVSearchPage() {
-  const [keyword, setKeyword] = useState('');
+  // 搜索词/结果持久化：从详情/播放页返回时保留搜索状态
+  const [keyword, setKeyword] = usePersistedState<string>('keyword', '');
   const [history, setHistory] = useState<string[]>([]);
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = usePersistedState<SearchResult[]>('results', []);
   const [loading, setLoading] = useState(false);
-  const [searched, setSearched] = useState('');
+  const [searched, setSearched] = usePersistedState<string>('searched', '');
   const [error, setError] = useState('');
   const firstResultRef = useRef<HTMLButtonElement | null>(null);
   const router = useRouter();

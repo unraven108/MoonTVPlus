@@ -35,6 +35,8 @@ import {
 import { SearchResult } from '@/lib/types';
 import { appendSpecialSourceParam, isSpecialSourcesEnabledOnDevice } from '@/lib/special-source.client';
 import { processImageUrl } from '@/lib/utils';
+import { usePersistedState } from '@/lib/use-persisted-state';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 import AcgSearch from '@/components/AcgSearch';
 import CapsuleSwitch from '@/components/CapsuleSwitch';
@@ -74,9 +76,8 @@ function SearchPageClient() {
   const [triggerPansouSearch, setTriggerPansouSearch] = useState(false);
   // ACG 搜索触发标志
   const [triggerAcgSearch, setTriggerAcgSearch] = useState(false);
-  const [selectedPansouCloudTypes, setSelectedPansouCloudTypes] = useState<
-    string[]
-  >([]);
+  const [selectedPansouCloudTypes, setSelectedPansouCloudTypes] =
+    usePersistedState<string[]>('selectedPansouCloudTypes', []);
   const [pansouCloudFilterOpen, setPansouCloudFilterOpen] = useState(false);
   const [pansouCloudFilterPosition, setPansouCloudFilterPosition] = useState({
     x: 0,
@@ -257,24 +258,24 @@ function SearchPageClient() {
 
     return { episodes, source_names, douban_id };
   };
-  // 过滤器：非聚合与聚合
-  const [filterAll, setFilterAll] = useState<{
+  // 筛选条件持久化：从详情/播放页返回时保留筛选状态
+  const [filterAll, setFilterAll] = usePersistedState<{
     source: string;
     title: string;
     year: string;
     yearOrder: 'none' | 'asc' | 'desc';
-  }>({
+  }>('filterAll', {
     source: 'all',
     title: 'all',
     year: 'all',
     yearOrder: 'none',
   });
-  const [filterAgg, setFilterAgg] = useState<{
+  const [filterAgg, setFilterAgg] = usePersistedState<{
     source: string;
     title: string;
     year: string;
     yearOrder: 'none' | 'asc' | 'desc';
-  }>({
+  }>('filterAgg', {
     source: 'all',
     title: 'all',
     year: 'all',
@@ -313,6 +314,22 @@ function SearchPageClient() {
     url: string;
     alt: string;
   } | null>(null);
+
+  // 列表滚动位置保存/恢复：从播放/详情页返回时恢复到之前浏览的位置
+  const { saveScroll: saveSearchScroll } = useListScrollRestoration({
+    prefix: 'search',
+    getFilterKey: () =>
+      `${activeTab}:${currentQueryRef.current.trim()}:${viewMode}:${JSON.stringify(
+        viewMode === 'agg' ? filterAgg : filterAll
+      )}:${resultDisplayMode}:${privateLibraryOnly ? '1' : '0'}`,
+    ready: !isLoading && searchResults.length > 0,
+  });
+
+  // 跳转前：保存播放页快速启动缓存 + 保存滚动位置
+  const handleSearchBeforeNavigate = () => {
+    savePartialCacheForPlayback();
+    saveSearchScroll();
+  };
 
   // 在“无排序”场景用于每个源批次的预排序：完全匹配标题优先，其次年份倒序，未知年份最后
   const sortBatchForNoOrder = (items: SearchResult[]) => {
@@ -941,6 +958,7 @@ function SearchPageClient() {
         type='button'
         onClick={() => {
           savePartialCacheForPlayback();
+          saveSearchScroll();
           router.push(itemUrl);
         }}
         className='group w-full rounded-2xl border border-gray-200/80 bg-white/90 p-3 text-left shadow-sm transition-all hover:border-green-300 hover:shadow-md dark:border-gray-700 dark:bg-gray-900/70 dark:hover:border-green-700'
@@ -2313,7 +2331,7 @@ function SearchPageClient() {
                                     ref={getGroupRef(mapKey)}
                                     from='search'
                                     onBeforeNavigate={
-                                      savePartialCacheForPlayback
+                                      handleSearchBeforeNavigate
                                     }
                                     isAggregate={true}
                                     title={title}
@@ -2377,7 +2395,7 @@ function SearchPageClient() {
                                   <VideoCard
                                     id={item.id}
                                     onBeforeNavigate={
-                                      savePartialCacheForPlayback
+                                      handleSearchBeforeNavigate
                                     }
                                     title={item.title}
                                     poster={item.poster}

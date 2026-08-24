@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
 import { SearchResult } from '@/lib/types';
+import { useListScrollRestoration } from '@/hooks/useListScrollRestoration';
 
 import PageLayout from '@/components/PageLayout';
 import VideoCard from '@/components/VideoCard';
@@ -55,8 +56,6 @@ function DuanjuPageClient() {
   const restoredCacheKeyRef = useRef<string | null>(null);
   // 恢复缓存后用于跳过因 currentPage 变化触发的重复请求
   const restoredPageRef = useRef<number | null>(null);
-  // 待恢复的滚动位置
-  const pendingScrollRef = useRef<number | null>(null);
   // 初始 URL 参数
   const urlSourceRef = useRef('');
   const urlCategoryRef = useRef('');
@@ -156,8 +155,6 @@ function DuanjuPageClient() {
         }
         setVideos(cached.videos);
         setHasMore(cached.hasMore);
-        // 恢复滚动位置（由常驻滚动监视器执行）
-        pendingScrollRef.current = cached.scrollY;
         return; // 跳过 fetch
       }
     }
@@ -213,54 +210,24 @@ function DuanjuPageClient() {
     };
   }, [hasMore, isLoadingVideos]);
 
-  // 跳转播放页前保存当前状态到缓存，供返回时恢复
+  // 列表滚动位置保存/恢复：从播放页返回时恢复到之前浏览的位置
+  const { saveScroll: saveDuanjuScroll } = useListScrollRestoration({
+    prefix: 'duanju',
+    getFilterKey: () => `${selectedSource}:${selectedCategory}`,
+    ready: !isLoadingVideos && videos.length > 0,
+  });
+
+  // 跳转播放页前保存当前状态到缓存（数据），并保存滚动位置
   const saveStateToCache = () => {
     if (videos.length === 0 || !selectedSource || !selectedCategory) return;
     writeCache(selectedSource, selectedCategory, {
       videos,
       currentPage,
       hasMore,
-      scrollY: window.scrollY,
+      scrollY: 0,
     });
+    saveDuanjuScroll();
   };
-
-  // ---- 恢复滚动位置（常驻监视器）----
-  // 不依赖 videos 渲染时序：只要恢复缓存时设置了 pendingScrollRef，
-  // 就每 100ms 尝试滚动到目标，页面高度足够且到达目标即完成；超时（3 秒）放弃。
-  useEffect(() => {
-    let attempts = 0;
-    const timer = setInterval(() => {
-      const targetY = pendingScrollRef.current;
-      if (targetY === null) return;
-      attempts++;
-      if (attempts > 30) {
-        pendingScrollRef.current = null;
-        return;
-      }
-      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      if (maxY < targetY) return; // 图片懒加载未撑开页面，继续等待
-      window.scrollTo(0, targetY);
-      if (Math.abs(window.scrollY - targetY) < 8) {
-        pendingScrollRef.current = null; // 到达目标
-      }
-    }, 100);
-    return () => clearInterval(timer);
-  }, []);
-
-  // 从播放页返回（浏览器后退）时，若组件实例被 Next.js 复用而未重新挂载，
-  // 上面的恢复逻辑不会重新运行；pageshow 时从缓存补一次滚动恢复。
-  useEffect(() => {
-    const onPageShow = () => {
-      if (videos.length === 0 || pendingScrollRef.current !== null) return;
-      if (!selectedSource || !selectedCategory) return;
-      const cached = readCache(selectedSource, selectedCategory);
-      if (cached && cached.scrollY > 0) {
-        pendingScrollRef.current = cached.scrollY;
-      }
-    };
-    window.addEventListener('pageshow', onPageShow);
-    return () => window.removeEventListener('pageshow', onPageShow);
-  }, [videos, selectedSource, selectedCategory]);
 
   return (
     <PageLayout activePath='/duanju'>

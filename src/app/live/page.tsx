@@ -16,6 +16,7 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { parseCustomTimeFormat } from '@/lib/time';
+import { usePersistedState } from '@/lib/use-persisted-state';
 import { useLiveSync } from '@/hooks/useLiveSync';
 
 import EpgScrollableRow from '@/components/EpgScrollableRow';
@@ -139,19 +140,20 @@ function LivePageClient() {
 
   // 分组相关
   const [groupedChannels, setGroupedChannels] = useState<{ [key: string]: LiveChannel[] }>({});
-  const [selectedGroup, setSelectedGroup] = useState<string>('');
+  // 分组/Tab/折叠态/搜索词持久化：从播放器返回时保留列表浏览位置
+  const [selectedGroup, setSelectedGroup] = usePersistedState<string>('selectedGroup', '');
 
   // Tab 切换
-  const [activeTab, setActiveTab] = useState<'channels' | 'sources'>('channels');
+  const [activeTab, setActiveTab] = usePersistedState<'channels' | 'sources'>('activeTab', 'channels');
 
   // 频道列表收起状态
-  const [isChannelListCollapsed, setIsChannelListCollapsed] = useState(false);
+  const [isChannelListCollapsed, setIsChannelListCollapsed] = usePersistedState<boolean>('isChannelListCollapsed', false);
 
   // 过滤后的频道列表
   const [filteredChannels, setFilteredChannels] = useState<LiveChannel[]>([]);
 
   // 搜索关键词
-  const [searchKeyword, setSearchKeyword] = useState('');
+  const [searchKeyword, setSearchKeyword] = usePersistedState<string>('searchKeyword', '');
   const [expandedMergedChannels, setExpandedMergedChannels] = useState<string[]>([]);
   const [lineTestResults, setLineTestResults] = useState<Record<string, LiveLineTestResult>>({});
 
