@@ -2,6 +2,7 @@
 'use client';
 
 import { Loader2, Search } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
 import { isAnimeCategoryText } from '@/lib/anime-keyword-expr';
@@ -21,6 +22,17 @@ interface Category {
 type ViewMode = 'browse' | 'search';
 
 function SourceSearchPageClient() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // 从 URL 读取初始状态（点击视频返回 / 刷新时恢复之前的源、分类、搜索）
+  const urlSource = searchParams.get('source') || '';
+  const urlCategory = searchParams.get('category') || '';
+  const urlMode = searchParams.get('mode');
+  const urlKeyword = searchParams.get('keyword') || '';
+  const initialSourceRef = useRef(urlSource);
+  const initialCategoryRef = useRef(urlCategory);
+
   const [apiSites, setApiSites] = useState<ApiSite[]>([]);
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [categories, setCategories] = useState<Category[]>([]);
@@ -31,10 +43,31 @@ function SourceSearchPageClient() {
   const [isLoadingVideos, setIsLoadingVideos] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>('browse');
-  const [searchKeyword, setSearchKeyword] = useState<string>('');
-  const [searchInputValue, setSearchInputValue] = useState<string>('');
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    urlMode === 'search' ? 'search' : 'browse'
+  );
+  const [searchKeyword, setSearchKeyword] = useState<string>(urlKeyword);
+  const [searchInputValue, setSearchInputValue] = useState<string>(urlKeyword);
   const loadMoreRef = useRef<HTMLDivElement>(null);
+
+  // 同步当前状态到 URL（不产生历史记录），返回时通过 URL 恢复
+  useEffect(() => {
+    // 源未就绪时不同步，避免清掉 URL 中待恢复的参数
+    if (!selectedSource) return;
+    const params = new URLSearchParams();
+    if (selectedSource) params.set('source', selectedSource);
+    if (viewMode === 'search' && searchKeyword) {
+      params.set('mode', 'search');
+      params.set('keyword', searchKeyword);
+    } else if (selectedCategory) {
+      params.set('category', selectedCategory);
+    }
+    const qs = params.toString();
+    const target = qs ? `/source-search?${qs}` : '/source-search';
+    if (window.location.pathname + window.location.search !== target) {
+      router.replace(target, { scroll: false });
+    }
+  }, [selectedSource, selectedCategory, viewMode, searchKeyword, router]);
 
   // 加载用户可用的视频源
   useEffect(() => {
@@ -45,9 +78,14 @@ function SourceSearchPageClient() {
         const data = await response.json();
         if (data.sources && Array.isArray(data.sources)) {
           setApiSites(data.sources);
-          // 默认选择第一个源
+          // 恢复 URL 中指定的源（若仍可用），否则默认第一个
           if (data.sources.length > 0) {
-            setSelectedSource(data.sources[0].key);
+            const validSource =
+              initialSourceRef.current &&
+              data.sources.some((s: ApiSite) => s.key === initialSourceRef.current)
+                ? initialSourceRef.current
+                : data.sources[0].key;
+            setSelectedSource(validSource);
           }
         }
       } catch (error) {
@@ -78,9 +116,18 @@ function SourceSearchPageClient() {
         const data = await response.json();
         if (data.categories && Array.isArray(data.categories)) {
           setCategories(data.categories);
-          // 默认选择第一个分类
+          // 恢复 URL 中指定的分类（仅当仍处于初始源时），否则默认第一个
           if (data.categories.length > 0) {
-            setSelectedCategory(data.categories[0].id);
+            const isInitialSource =
+              initialSourceRef.current &&
+              selectedSource === initialSourceRef.current;
+            const validCategory =
+              isInitialSource &&
+              initialCategoryRef.current &&
+              data.categories.some((c: Category) => c.id === initialCategoryRef.current)
+                ? initialCategoryRef.current
+                : data.categories[0].id;
+            setSelectedCategory(validCategory);
           }
         }
       } catch (error) {
